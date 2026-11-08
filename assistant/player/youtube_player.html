@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Player do YouTube</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", sans-serif;
+      background: #111;
+      color: #f5f5f5;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      display: grid;
+      min-height: 100vh;
+      margin: 0;
+      place-items: center;
+      padding: 24px;
+    }
+
+    main { width: min(100%, 1100px); }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: clamp(1.2rem, 3vw, 1.8rem);
+    }
+
+    .video {
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #player { width: 100%; height: 100%; }
+
+    #status {
+      min-height: 1.5em;
+      margin: 12px 0 0;
+      color: #c8c8c8;
+    }
+
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Player do YouTube</h1>
+    <div class="video"><div id="player"></div></div>
+    <p id="status" role="status" aria-live="polite">Carregando player...</p>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const videoId = params.get("video_id");
+    const videoTitle = params.get("title") || "Player do YouTube";
+    const token = params.get("token");
+    const session = params.get("session");
+    const status = document.getElementById("status");
+    document.getElementById("title").textContent = videoTitle;
+    const pendingCommands = [];
+    let player;
+    let lastCommandId = 0;
+    let playerReady = false;
+    let polling = false;
+    let playbackBlocked = false;
+
+    if (!/^[\w-]{11}$/.test(videoId || "") || !token || !session) {
+      status.textContent = "Endereço de player inválido. Abra o vídeo pelo aplicativo.";
+      throw new Error("Parâmetros do player inválidos.");
+    }
+
+    function runCommand(command) {
+      if (!playerReady) {
+        pendingCommands.push(command);
+        return;
+      }
+
+      switch (command.command) {
+        case "load_video":
+          player.cueVideoById(command.video_id);
+          document.getElementById("title").textContent = command.title;
+          status.textContent = "Carregando vídeo selecionado.";
+          break;
+        case "play":
+          playbackBlocked = false;
+          status.textContent = "Tentando retomar a reprodução...";
+          player.playVideo();
+          break;
+        case "pause":
+          player.pauseVideo();
+          status.textContent = "Vídeo pausado.";
+          break;
+        case "mute":
+          player.mute();
+          status.textContent = "Som desativado.";
+          break;
+        case "unmute":
+          player.unMute();
+          status.textContent = "Som ativado.";
+          break;
+        case "forward": {
+          const currentTime = player.getCurrentTime();
+          const duration = player.getDuration();
+          player.seekTo(
+            duration > 0 ? Math.min(duration, currentTime + 10) : currentTime + 10,
+            true
+          );
+          status.textContent = "Avançando 10 segundos.";
+          break;
+        }
+        case "rewind":
+          player.seekTo(Math.max(0, player.getCurrentTime() - 10), true);
+          status.textContent = "Retrocedendo 10 segundos.";
+          break;
+      }
+    }
+
+    function flushCommands() {
+      while (pendingCommands.length) {
+        runCommand(pendingCommands.shift());
+      }
+    }
+
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player("player", {
+        videoId,
+        playerVars: {
+          autoplay: 1,
+          enablejsapi: 1,
+          playsinline: 1,
+          controls: 1,
+          origin: location.origin
+        },
+        events: {
+          onReady() {
+            playerReady = true;
+            player.mute();
+            player.playVideo();
+            status.textContent = "Iniciando reprodução automática sem som. Diga 'ativar som' para ouvir.";
+            flushCommands();
+          },
+          onError(event) {
+            status.textContent = "O YouTube não conseguiu reproduzir este vídeo (erro "
+              + event.data + ").";
+          },
+          onStateChange(event) {
+            if (event.data === YT.PlayerState.PLAYING) {
+              playbackBlocked = false;
+              status.textContent = player.isMuted()
+                ? "Vídeo reproduzindo sem som. Diga 'ativar som' para ouvir."
+                : "Vídeo em reprodução.";
+            } else if (
+              event.data === YT.PlayerState.PAUSED
+              && !playbackBlocked
+            ) {
+              status.textContent = "Vídeo pausado.";
+            }
+          },
+          onAutoplayBlocked() {
+            playbackBlocked = true;
+            status.textContent = "O navegador bloqueou a reprodução. Para retomar por voz, permita autoplay com som para este site nas configurações do navegador e reabra o vídeo.";
+          }
+        }
+      });
+    }
+
+    async function pollCommands() {
+      if (polling) return;
+      polling = true;
+      try {
+        const query = new URLSearchParams({
+          token,
+          session,
+          after: String(lastCommandId)
+        });
+        const response = await fetch("/commands?" + query, { cache: "no-store" });
+        if (!response.ok) throw new Error("A conexão com o aplicativo foi encerrada.");
+        const data = await response.json();
+        for (const item of data.commands) {
+          lastCommandId = Math.max(lastCommandId, item.id);
+          runCommand(item);
+        }
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        polling = false;
+        window.setTimeout(pollCommands, 400);
+      }
+    }
+
+    const apiScript = document.createElement("script");
+    apiScript.src = "https://www.youtube.com/iframe_api";
+    apiScript.onerror = () => {
+      status.textContent = "Não foi possível carregar a API do player do YouTube.";
+    };
+    document.head.appendChild(apiScript);
+    pollCommands();
+  </script>
+</body>
+</html>

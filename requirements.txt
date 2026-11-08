@@ -1,0 +1,13 @@
+﻿# Reconhecimento de Voz & Captura de Microfone Local
+sounddevice>=0.4.6
+numpy>=1.24.0
+faster-whisper>=1.0.0
+
+# SDKs para Google AI Studio (Gemini & text-embedding-004)
+google-genai>=0.1.0
+google-generativeai>=0.8.0
+PyAudio>=0.2.14
+Pillow>=9.0.0
+
+# Utilidades de Ambiente
+python-dotenv>=1.0.0
